@@ -1,0 +1,56 @@
+name: Update Rules
+
+on: 
+  workflow_dispatch:
+  schedule:
+    - cron: 0 16 * * *
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  Update_Rules:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+      
+      - name: Setup Python
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.14'
+      
+      - name: Initialize environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update > /dev/null
+          sudo -E apt-get -qq install -y wget gzip
+          sudo timedatectl set-timezone "$TZ"
+          python -m pip install --upgrade pip
+          pip install -U tld IPy dnspython httpx loguru
+
+      - name: Update Rules
+        id: update
+        run: |
+          python adblock.py
+          rm -rf __pycache__
+          rm -rf app/__pycache__
+          echo "message=$(date)" >> $GITHUB_OUTPUT
+
+      - name: Commit Changes
+        uses: stefanzweifel/git-auto-commit-action@master
+        with:
+          commit_message: ${{ steps.update.outputs.message }}
+
+  Delete_Workflow_Runs:
+    needs: [ Update_Rules ]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 1
+          keep_minimum_runs: 5
