@@ -1,0 +1,84 @@
+name: Update Rules
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 16 * * *'
+
+env:
+  TZ: Asia/Shanghai
+  SMARTDNS_URL: https://github.com/pymumu/smartdns/releases/download/Release48.4/smartdns-x86_64
+  SMARTDNS_PATH: /tmp/smartdns
+  DB_URL: https://github.com/nantayo/adblockfilters/releases/download/domain/domain.db
+
+jobs:
+  Update_Rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Setup Python
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.14'
+
+      - name: Initialize environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update > /dev/null
+          sudo -E apt-get -qq install -y wget gzip
+          python -m pip install --upgrade pip
+          pip install -U tld IPy dnspython httpx
+
+      - name: Setup SmartDNS
+        run: |
+          mkdir -p $SMARTDNS_PATH
+          curl -fsSL $SMARTDNS_URL -o $SMARTDNS_PATH/smartdns
+          chmod +x $SMARTDNS_PATH/smartdns
+          cp smartdns.conf $SMARTDNS_PATH/smartdns.conf
+          nohup $SMARTDNS_PATH/smartdns -f -c $SMARTDNS_PATH/smartdns.conf > /dev/null 2>&1 &
+          sleep 2
+          python -c "import dns.resolver as d; r=d.Resolver(); r.nameservers=['127.0.0.1']; r.port=5053; r.lifetime=8; r.resolve('github.com','A')" > /dev/null \
+            || { echo "smartdns not ready"; exit 1; }
+
+      - name: Download domain database
+        continue-on-error: true
+        run: curl -fsSL $DB_URL -o domain.db || echo "::notice::no cached database, full check this time"
+
+      - name: Update Rules
+        id: update
+        run: |
+          set -o pipefail
+          python update.py
+          count=$(grep -o 'domains=[0-9]*' rules/adblockmosdns.txt | head -1 | cut -d= -f2)
+          echo "message=chore: update rules (${count:-0} domains)" >> $GITHUB_OUTPUT
+
+      - name: Upload domain database
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create domain --title "domain" --notes "" 2>/dev/null || true
+          gh release upload domain domain.db --clobber
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rules/adblockmosdns.txt
+          git diff --staged --quiet \
+            || git commit -m "${{ steps.update.outputs.message }}"
+          git push
+
+  Delete_Workflow_Runs:
+    needs: [Update_Rules]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 1
+          keep_minimum_runs: 3
