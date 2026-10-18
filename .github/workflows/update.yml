@@ -1,0 +1,68 @@
+name: Update Rules
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 17 * * *'
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  DB_URL: https://github.com/nantayo/adblockfilters/releases/download/domain/domain.db
+  SMARTDNS_PATH: /tmp/smartdns
+  TZ: Asia/Shanghai
+
+jobs:
+  Update_Rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Setup Python
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.14'
+
+      - name: Initialize environment
+        run: |
+          pip install -U tld IPy dnspython httpx
+
+      - name: Setup SmartDNS
+        run: |
+          mkdir -p $SMARTDNS_PATH
+          gh release download -R pymumu/smartdns -p smartdns-x86_64 -O $SMARTDNS_PATH/smartdns
+          chmod +x $SMARTDNS_PATH/smartdns
+          cp smartdns.conf $SMARTDNS_PATH/smartdns.conf
+          nohup $SMARTDNS_PATH/smartdns -f -c $SMARTDNS_PATH/smartdns.conf > /dev/null 2>&1 &
+          sleep 2
+          python -c "import dns.resolver as d; r=d.Resolver(); r.nameservers=['127.0.0.1']; r.port=5053; r.lifetime=8; r.resolve('github.com','A')" > /dev/null || { echo "smartdns not ready"; exit 1; }
+
+      - name: Download domain database
+        continue-on-error: true
+        run: curl -fsSL $DB_URL -o domain.db || echo "::notice::no cached database, full check this time"
+
+      - name: Update Rules
+        id: update
+        run: |
+          set -o pipefail
+          python update.py
+          count=$(grep -o 'domains=[0-9]*' rules/adblockmosdns.txt | head -1 | cut -d= -f2)
+          echo "message=chore: update rules (${count:-0} domains)" >> $GITHUB_OUTPUT
+
+      - name: Upload domain database
+        run: |
+          tag=domain
+          gh release create $tag --repo ${{ github.repository }} --title "$tag" --notes "" 2> /dev/null || true
+          gh release upload $tag domain.db --repo ${{ github.repository }} --clobber
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rules/adblockmosdns.txt
+          git diff --staged --quiet || git commit -m "${{ steps.update.outputs.message }}"
+          git push
+
+      - name: Delete workflow runs
+        run: |
+          gh run list --repo ${{ github.repository }} --limit 100 --status completed --json databaseId,createdAt --jq '.[] | [.databaseId, .createdAt] | @tsv' | while IFS=$'\t' read -r id created; do if [[ $created < $(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ) ]]; then gh run delete $id --repo ${{ github.repository }}; fi; done
