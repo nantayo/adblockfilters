@@ -1,0 +1,23 @@
+# 跨天缓存（release asset），本地不保留
+domain.db
+
+# 上游原始规则：每天现拉，不进 git
+/rules/5whys_Adblock_Home_Rules_Medium.txt
+/rules/AdGuard_DNS_过滤器.txt
+/rules/AdRules_DNS_List.txt
+/rules/DNS-Blocklists_PRO.txt
+/rules/OISD.txt
+/rules/StevenBlack_hosts.txt
+/rules/秋风广告规则.txt
+/rules/轻量广告拦截规则.txt
+/rules/domain.txt
+/rules/black.txt
+/rules/*.download
+
+# Windows 快捷方式残骸
+adblockfilters.lnk
+
+__pycache__/
+*.pyc
+run.log
+source_report.txt
