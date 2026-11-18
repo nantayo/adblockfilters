@@ -1,0 +1,58 @@
+name: Update Rules
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 14 * * *'
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RELEASE_TAG: domain
+  SMARTDNS_PATH: /tmp/smartdns
+  TZ: Asia/Shanghai
+
+jobs:
+  Update_Rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Setup Python
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.x'
+
+      - name: Initialize environment
+        run: |
+          pip install -U tld IPy dnspython httpx
+
+      - name: Setup SmartDNS
+        run: |
+          mkdir -p $SMARTDNS_PATH
+          gh release download -R pymumu/smartdns -p smartdns-x86_64 -O $SMARTDNS_PATH/smartdns
+          chmod +x $SMARTDNS_PATH/smartdns
+          cp smartdns.conf $SMARTDNS_PATH/smartdns.conf
+          nohup $SMARTDNS_PATH/smartdns -f -c $SMARTDNS_PATH/smartdns.conf > /dev/null 2>&1 &
+          sleep 2
+          python -c "import dns.resolver as d; r=d.Resolver(); r.nameservers=['127.0.0.1']; r.port=5053; r.lifetime=8; r.resolve('github.com','A')" > /dev/null || { echo "smartdns not ready"; exit 1; }
+
+      - name: Download previous state
+        continue-on-error: true
+        run: |
+          mkdir -p rules
+          gh release download $RELEASE_TAG --repo ${{ github.repository }} --pattern domain.db --output domain.db --clobber || echo "::notice::no cached database, full check this time"
+          gh release download $RELEASE_TAG --repo ${{ github.repository }} --pattern adblockmosdns.txt --output rules/adblockmosdns.txt --clobber || echo "::notice::no previous rules"
+
+      - name: Update Rules
+        run: python update.py
+
+      - name: Upload release assets
+        run: |
+          gh release create $RELEASE_TAG --repo ${{ github.repository }} --title "$RELEASE_TAG" --notes "" 2> /dev/null || true
+          gh release upload $RELEASE_TAG domain.db --repo ${{ github.repository }} --clobber
+          gh release upload $RELEASE_TAG rules/adblockmosdns.txt --repo ${{ github.repository }} --clobber
+
+      - name: Delete workflow runs
+        run: |
+          gh run list --repo ${{ github.repository }} -w update.yml --limit 100 --status completed --json databaseId,createdAt --jq '.[] | [.databaseId, .createdAt] | @tsv' | while IFS=$'\t' read -r id created; do if [[ $created < $(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ) ]]; then gh run delete $id --repo ${{ github.repository }}; fi; done
